@@ -1,8 +1,8 @@
-# MailToPrint v2.1 (Bootstrap + Web UI)
+# MailToPrint
 
 ## Install
-1. Unzip:
-   unzip mailtoprint_v2_1.zip
+1. Download:
+   download repository
 2. Run installer with sudo from the extracted folder:
    sudo ./install.sh
 
