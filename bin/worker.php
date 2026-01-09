@@ -264,7 +264,7 @@ foreach($uids as $uid){
 
   log_msg("Worker: uid=$uid SUCCESS from=$from subj=".$subject." files=".implode(",", $printed_names));
   send_mail_msmtp($from, "Druckauftrag erfolgreich: ".($subject?:'ohne Betreff'),
-    "Erfolgreich gedruckt.\nPDFs:\n" . implode("\n", array_map(fn($x)=>$x, $printed_names))");
+    "Erfolgreich gedruckt.\nPDFs:\n" . implode("\n", array_map(fn($x)=>$x, $printed_names)));
 }
 
 imap_close($mbox);
