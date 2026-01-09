@@ -188,16 +188,16 @@ foreach($uids as $uid){
   // Whitelist
   if ($whitelist_enabled) {
     if ($from==='' || !in_array(strtolower($from), $wl, true)) {
-      log_msg("Worker: uid=$uid sender not allowed -> blocked from=$from subj=".$subject);
+      log_msg("Worker: uid=$uid BLOCKED from=$from subj=".$subject." files=".(isset($printed_names)?implode(",",$printed_names):"-"));
       if ($dry) {
         send_mail_msmtp($from, "Druckauftrag abgelehnt (Dry-Run): ".($subject?:'ohne Betreff'),
-          "Dry-Run aktiv. Absender nicht auf Whitelist. Mail würde nach '$imap_blocked' verschoben.");
+          "Ihr Druckauftrag wurde abgelehnt.");
       } else {
         imap_setflag_full($mbox, (string)$msgno, "\\Seen");
         imap_mail_move($mbox, (string)$msgno, $imap_blocked);
         imap_expunge($mbox);
         send_mail_msmtp($from, "Druckauftrag abgelehnt: ".($subject?:'ohne Betreff'),
-          "Absender nicht auf Whitelist. Mail wurde nach '$imap_blocked' verschoben.");
+          "Ihr Druckauftrag wurde abgelehnt.");
       }
       continue;
     }
@@ -208,7 +208,7 @@ foreach($uids as $uid){
   if ($structure) collect_pdfs($mbox, $msgno, $structure, '', $pdfs);
 
   if (count($pdfs) === 0) {
-    log_msg("Worker: uid=$uid no pdf from=$from subj=".$subject);
+    log_msg("Worker: uid=$uid NO_PDF from=$from subj=".$subject." files=-");
     if (!$dry) send_mail_msmtp($from, "FEHLER: Kein PDF-Anhang", "Kein PDF-Anhang gefunden. Bitte PDF anhängen und erneut senden.");
     continue;
   }
@@ -221,6 +221,7 @@ foreach($uids as $uid){
   @mkdir($attach,0770,true);
 
   $printed=0; $failed=0;
+  $printed_names=[];
   foreach($pdfs as $p){
     $fn = preg_replace('/[^A-Za-z0-9._-]+/', '_', $p['name']);
     if ($fn === '') $fn = "attachment.pdf";
@@ -230,6 +231,7 @@ foreach($uids as $uid){
 
     if ($dry) {
       log_msg("DRY uid=$uid would print $fn copies=$copies opts=".implode(' ',$opts));
+      $printed_names[]=$fn;
       $printed++;
       continue;
     }
@@ -239,7 +241,7 @@ foreach($uids as $uid){
     if($out===null){ $failed++; log_msg("lp failed null uid=$uid file=$fn"); }
     else {
       if(stripos($out,'error')!==false){ $failed++; log_msg("lp error uid=$uid: ".trim($out)); }
-      else $printed++;
+      else { $printed++; $printed_names[]=$fn; }
     }
   }
 
@@ -260,9 +262,9 @@ foreach($uids as $uid){
   imap_mail_move($mbox, (string)$msgno, $imap_done);
   imap_expunge($mbox);
 
-  log_msg("Worker: uid=$uid printed=$printed -> moved to done");
+  log_msg("Worker: uid=$uid SUCCESS from=$from subj=".$subject." files=".implode(",", $printed_names));
   send_mail_msmtp($from, "Druckauftrag erfolgreich: ".($subject?:'ohne Betreff'),
-    "Erfolgreich gedruckt.\nPDFs: $printed\nMail wurde nach '$imap_done' verschoben.");
+    "Erfolgreich gedruckt.\nPDFs:\n" . implode("\n", array_map(fn($x)=>$x, $printed_names))");
 }
 
 imap_close($mbox);

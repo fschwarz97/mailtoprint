@@ -27,6 +27,24 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 apt-get install -y   rsync   apache2 apache2-utils   php libapache2-mod-php php-sqlite3   sqlite3   cups cups-client cups-filters   avahi-daemon avahi-utils   curl ripmime   msmtp ca-certificates   logrotate
 
+
+say "PHP IMAP Extension installieren"
+PHV="$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')"
+# Prefer version-specific package if available (e.g. php8.3-imap). Fallback to php-imap.
+if apt-cache show "php${PHV}-imap" >/dev/null 2>&1; then
+  apt-get install -y "php${PHV}-imap"
+else
+  apt-get install -y php-imap
+fi
+
+if command -v phpenmod >/dev/null 2>&1; then
+  phpenmod imap >/dev/null 2>&1 || true
+  phpenmod -v "${PHV}" imap >/dev/null 2>&1 || true
+fi
+
+systemctl restart apache2 || true
+php -m | grep -qi '^imap$' || die "PHP IMAP Extension (imap) ist nicht aktiv. Bitte Paket php${PHV}-imap prüfen."
+
 systemctl enable --now apache2
 systemctl enable --now cups avahi-daemon
 
