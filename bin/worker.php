@@ -196,22 +196,30 @@ foreach($uids as $uid){
     if ($mailbox && $host) $from = strtolower($mailbox . '@' . $host);
   }
 
+
+  // Pre-scan attachments (PDF names) so logs include filenames even when blocked.
+    $pdf_names = array_map(fn($p)=>($p['name'] ?? ''), $pdfs);
+  $pdf_names = array_values(array_filter($pdf_names, fn($x)=>trim($x) !== ''));
+
   // Whitelist
   if ($whitelist_enabled) {
     if ($from==='' || !in_array(strtolower($from), $wl, true)) {
-      log_msg("Worker: uid=$uid BLOCKED from=$from subj=".$subject." files=".(isset($printed_names)?implode(",",$printed_names):"-"));
+      $files = (count($pdf_names) > 0) ? implode(",", $pdf_names) : "-";
+      log_msg("Worker: uid=$uid BLOCKED from=$from subj=".$subject." files=".$files);
       if ($dry) {
         send_mail_msmtp($from, "Druckauftrag abgelehnt (Dry-Run): ".($subject?:'ohne Betreff'),
-          "Ihr Druckauftrag wurde abgelehnt.);
+          "Ihr Druckauftrag wurde abgelehnt.");
       } else {
-        imap_setflag_full($mbox, (string)$msgno, "\\Seen);
+        imap_setflag_full($mbox, (string)$msgno, "\\Seen");
         imap_mail_move($mbox, (string)$msgno, $imap_blocked);
         imap_expunge($mbox);
         send_mail_msmtp($from, "Druckauftrag abgelehnt: ".($subject?:'ohne Betreff'),
-          "Ihr Druckauftrag wurde abgelehnt.);
+          "Ihr Druckauftrag wurde abgelehnt.");
       }
       continue;
     }
+  }
+
   }
 
   $structure = imap_fetchstructure($mbox, $msgno);
