@@ -2,19 +2,18 @@
 require __DIR__ . '/../www/lib.php';
 ensure_schema();
 
-log_msg("Worker start");
-
-if (!is_installed()) { log_msg("Worker exit: not installed"); exit(0); }
-if (get_setting('automation_enabled','0') !== '1') { log_msg("Worker exit: automation disabled"); exit(0); }
+// Silent when nothing happens; log only on actions/errors.
+if (!is_installed()) exit(0);
+if (get_setting('automation_enabled','0') !== '1') exit(0);
 
 $printer = get_setting('printer_name','');
-if ($printer === '') { log_msg("Worker exit: no printer configured"); exit(0); }
+if ($printer === '') { log_msg("Worker error: no printer configured"); exit(1); }
 
 $dry = get_setting('dry_run','0') === '1';
 
 $imap_host = get_setting('imap_host');
 $imap_port = get_setting('imap_port','993');
-$imap_tls  = get_setting('imap_tls','imaps');
+$imap_tls  = get_setting('imap_tls','imaps'); // imaps | starttls | none
 $imap_user = get_setting('imap_user');
 $imap_pass = get_setting('imap_pass');
 $imap_inbox = get_setting('imap_inbox','INBOX');
@@ -31,7 +30,7 @@ if ($whitelist_enabled) {
 function msmtp_make_cfg(): string {
   $smtp_host = get_setting('smtp_host');
   $smtp_port = get_setting('smtp_port','587');
-  $smtp_tls  = get_setting('smtp_tls','starttls');
+  $smtp_tls  = get_setting('smtp_tls','starttls'); // starttls | ssl | none
   $smtp_user = get_setting('smtp_user');
   $smtp_pass = get_setting('smtp_pass');
   $smtp_from = get_setting('smtp_from');
@@ -88,127 +87,182 @@ function send_mail_msmtp(string $to, string $subj, string $body): void {
   @unlink($cfg);
 }
 
-function extract_first_email(string $line): string {
-  if (preg_match('/([A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,})/', $line, $m)) return $m[1];
-  return '';
+function parse_subject_opts(string $subject): array {
+  $s = strtolower($subject);
+  $color='sw'; $sides='1';
+  if (preg_match('/(sw|bunt)\s*-\s*(1|2)/',$s,$mm)){ $color=$mm[1]; $sides=$mm[2]; }
+  $copies=1;
+  if (preg_match('/(^|[^a-z0-9])x([0-9]{1,3})([^0-9]|$)/',$s,$mm)) $copies=(int)$mm[2];
+  if (preg_match('/(kopien|copies)\s*=\s*([0-9]{1,3})/',$s,$mm)) $copies=(int)$mm[2];
+  $copies=max(1,min(50,$copies));
+
+  $opts=[];
+  $opts[] = ($color==='bunt') ? "-o ColorModel=RGB" : "-o ColorModel=Gray";
+  $opts[] = ($sides==='2') ? "-o sides=two-sided-long-edge" : "-o sides=one-sided";
+  return [$opts, $copies, $color, $sides];
 }
 
-function imap_url(string $host, string $port, string $tls, string $mbox): array {
-  $scheme='imaps'; $extra="--ssl-reqd";
-  if($tls==='starttls'){ $scheme='imap'; $extra="--ssl-reqd"; }
-  if($tls==='none'){ $scheme='imap'; $extra=""; }
-  return ["{$scheme}://{$host}:{$port}/{$mbox}", $extra];
+function imap_mailbox_string(string $host,string $port,string $tls,string $folder): string {
+  $flags = "/imap";
+  if ($tls === 'imaps') $flags .= "/ssl";
+  elseif ($tls === 'starttls') $flags .= "/tls";
+  // tls=none => plain imap
+  return "{" . $host . ":" . $port . $flags . "}" . $folder;
 }
 
-function imap_cmd(string $host,string $port,string $tls,string $user,string $pass,string $mbox,string $cmd): string {
-  [$url,$extra]=imap_url($host,$port,$tls,$mbox);
-  $full="curl -sS --fail {$extra} --user ".escapeshellarg("$user:$pass")." ".escapeshellarg($url)." -X ".escapeshellarg($cmd)." 2>&1";
-  return (string)shell_exec($full);
+function decode_part($stream, int $msgno, $part, string $partno): string {
+  $data = imap_fetchbody($stream, $msgno, $partno);
+  if ($part->encoding == ENCBASE64) return base64_decode($data);
+  if ($part->encoding == ENCQUOTEDPRINTABLE) return quoted_printable_decode($data);
+  return $data;
 }
 
-function imap_move_seen(string $host,string $port,string $tls,string $user,string $pass,string $src,string $dst,string $uid): void {
-  imap_cmd($host,$port,$tls,$user,$pass,$src,"UID STORE $uid +FLAGS (\\Seen)");
-  imap_cmd($host,$port,$tls,$user,$pass,$src,"UID COPY $uid \"$dst\"");
-  imap_cmd($host,$port,$tls,$user,$pass,$src,"UID STORE $uid +FLAGS (\\Deleted)");
-  imap_cmd($host,$port,$tls,$user,$pass,$src,"EXPUNGE");
+function collect_pdfs($stream, int $msgno, $part, string $partno, array &$out): void {
+  $is_pdf = false;
+
+  $subtype = strtoupper($part->subtype ?? '');
+  if ($subtype === 'PDF') $is_pdf = true;
+
+  // Check parameters / dparameters for filename
+  $filename = '';
+  if (!empty($part->dparameters)) {
+    foreach ($part->dparameters as $p) {
+      if (strtolower($p->attribute) === 'filename') $filename = (string)$p->value;
+    }
+  }
+  if ($filename === '' && !empty($part->parameters)) {
+    foreach ($part->parameters as $p) {
+      if (strtolower($p->attribute) === 'name') $filename = (string)$p->value;
+    }
+  }
+  if ($filename !== '' && preg_match('/\.pdf$/i', $filename)) $is_pdf = true;
+
+  if ($is_pdf && ($part->type ?? -1) != TYPEMULTIPART) {
+    $blob = decode_part($stream, $msgno, $part, $partno);
+    // Magic header fallback
+    if (str_starts_with($blob, "%PDF-") || $subtype === 'PDF') {
+      $out[] = ['name'=>$filename ?: ("attachment-" . $partno . ".pdf"), 'data'=>$blob];
+    }
+    return;
+  }
+
+  if (!empty($part->parts)) {
+    $idx = 1;
+    foreach ($part->parts as $p) {
+      $pn = $partno === '' ? (string)$idx : ($partno . "." . $idx);
+      collect_pdfs($stream, $msgno, $p, $pn, $out);
+      $idx++;
+    }
+  }
 }
 
-$search = imap_cmd($imap_host,$imap_port,$imap_tls,$imap_user,$imap_pass,$imap_inbox,"UID SEARCH UNSEEN");
-$uids=[];
-if(preg_match('/\* SEARCH(.*)\r?\n/',$search,$m)){
-  $uids=preg_split('/\s+/',trim($m[1]));
-  $uids=array_values(array_filter($uids,fn($x)=>$x!==''));
+$mbox = @imap_open(imap_mailbox_string($imap_host,$imap_port,$imap_tls,$imap_inbox), $imap_user, $imap_pass);
+if (!$mbox) {
+  log_msg("Worker error: imap_open failed: " . imap_last_error());
+  exit(1);
 }
-if(!$uids){ log_msg("Worker: no unread mails"); exit(0); }
+
+$uids = imap_search($mbox, 'UNSEEN', SE_UID);
+if (!$uids || count($uids) === 0) {
+  imap_close($mbox);
+  exit(0); // no noise
+}
 
 $workbase = base_dir()."/data/work";
 @mkdir($workbase,0770,true);
 
 foreach($uids as $uid){
-  $dir=$workbase."/uid-$uid-".time();
-  @mkdir($dir,0770,true);
-  $eml=$dir."/mail.eml";
+  $msgno = imap_msgno($mbox, $uid);
+  if ($msgno <= 0) { log_msg("Worker error: cannot resolve msgno for uid=$uid"); continue; }
 
-  $raw=imap_cmd($imap_host,$imap_port,$imap_tls,$imap_user,$imap_pass,$imap_inbox,"UID FETCH $uid (RFC822)");
-  file_put_contents($eml,str_replace("\r","",$raw));
-
-  $lines=file($eml, FILE_IGNORE_NEW_LINES) ?: [];
-  $subject=''; $from='';
-  foreach($lines as $ln){
-    if($subject==='' && stripos($ln,'Subject:')===0) $subject=trim(substr($ln,8));
-    if($from==='' && stripos($ln,'From:')===0) $from=extract_first_email($ln);
-    if($subject!=='' && $from!=='') break;
+  $header = imap_headerinfo($mbox, $msgno);
+  $subject = isset($header->subject) ? (string)imap_utf8($header->subject) : '';
+  $from = '';
+  if (!empty($header->from) && isset($header->from[0])) {
+    $f = $header->from[0];
+    $mailbox = $f->mailbox ?? '';
+    $host = $f->host ?? '';
+    if ($mailbox && $host) $from = strtolower($mailbox . '@' . $host);
   }
 
-  if($whitelist_enabled){
-    if($from==='' || !in_array(strtolower($from),$wl,true)){
+  // Whitelist
+  if ($whitelist_enabled) {
+    if ($from==='' || !in_array(strtolower($from), $wl, true)) {
       log_msg("Worker: uid=$uid sender not allowed -> blocked from=$from subj=".$subject);
-      if($dry){
-        send_mail_msmtp($from,"Druckauftrag abgelehnt (Dry-Run): ".($subject?:'ohne Betreff'),
+      if ($dry) {
+        send_mail_msmtp($from, "Druckauftrag abgelehnt (Dry-Run): ".($subject?:'ohne Betreff'),
           "Dry-Run aktiv. Absender nicht auf Whitelist. Mail würde nach '$imap_blocked' verschoben.");
       } else {
-        imap_move_seen($imap_host,$imap_port,$imap_tls,$imap_user,$imap_pass,$imap_inbox,$imap_blocked,$uid);
-        send_mail_msmtp($from,"Druckauftrag abgelehnt: ".($subject?:'ohne Betreff'),
+        imap_setflag_full($mbox, (string)$msgno, "\\Seen");
+        imap_mail_move($mbox, (string)$msgno, $imap_blocked);
+        imap_expunge($mbox);
+        send_mail_msmtp($from, "Druckauftrag abgelehnt: ".($subject?:'ohne Betreff'),
           "Absender nicht auf Whitelist. Mail wurde nach '$imap_blocked' verschoben.");
       }
       continue;
     }
   }
 
-  $s=strtolower($subject);
-  $color='sw'; $sides='1';
-  if(preg_match('/(sw|bunt)\s*-\s*(1|2)/',$s,$mm)){ $color=$mm[1]; $sides=$mm[2]; }
-  $copies=1;
-  if(preg_match('/(^|[^a-z0-9])x([0-9]{1,3})([^0-9]|$)/',$s,$mm)) $copies=(int)$mm[2];
-  if(preg_match('/(kopien|copies)\s*=\s*([0-9]{1,3})/',$s,$mm)) $copies=(int)$mm[2];
-  $copies=max(1,min(50,$copies));
+  $structure = imap_fetchstructure($mbox, $msgno);
+  $pdfs = [];
+  if ($structure) collect_pdfs($mbox, $msgno, $structure, '', $pdfs);
 
-  $opts=[];
-  $opts[] = ($color==='bunt') ? "-o ColorModel=RGB" : "-o ColorModel=Gray";
-  $opts[] = ($sides==='2') ? "-o sides=two-sided-long-edge" : "-o sides=one-sided";
-
-  $attach=$dir."/attach";
-  @mkdir($attach,0770,true);
-  shell_exec("ripmime -i ".escapeshellarg($eml)." -d ".escapeshellarg($attach)." >/dev/null 2>&1");
-  $pdfs=array_merge(glob($attach."/*.pdf")?:[], glob($attach."/*.PDF")?:[]);
-  if(!$pdfs){
-    log_msg("Worker: uid=$uid no pdf from=$from");
-    if(!$dry) send_mail_msmtp($from,"FEHLER: Kein PDF-Anhang","Kein PDF-Anhang gefunden. Bitte PDF anhängen und erneut senden.");
+  if (count($pdfs) === 0) {
+    log_msg("Worker: uid=$uid no pdf from=$from subj=".$subject);
+    if (!$dry) send_mail_msmtp($from, "FEHLER: Kein PDF-Anhang", "Kein PDF-Anhang gefunden. Bitte PDF anhängen und erneut senden.");
     continue;
   }
 
-  $failed=0; $printed=0;
-  foreach($pdfs as $pdf){
-    if($dry){
-      log_msg("DRY uid=$uid would print $pdf copies=$copies opts=".implode(' ',$opts));
-      $printed++; continue;
+  [$opts, $copies] = parse_subject_opts($subject);
+
+  $dir=$workbase."/uid-$uid-".time();
+  @mkdir($dir,0770,true);
+  $attach=$dir."/attach";
+  @mkdir($attach,0770,true);
+
+  $printed=0; $failed=0;
+  foreach($pdfs as $p){
+    $fn = preg_replace('/[^A-Za-z0-9._-]+/', '_', $p['name']);
+    if ($fn === '') $fn = "attachment.pdf";
+    if (!preg_match('/\.pdf$/i', $fn)) $fn .= ".pdf";
+    $path = $attach . "/" . $fn;
+    file_put_contents($path, $p['data']);
+
+    if ($dry) {
+      log_msg("DRY uid=$uid would print $fn copies=$copies opts=".implode(' ',$opts));
+      $printed++;
+      continue;
     }
-    $cmd="lp -d ".escapeshellarg($printer)." -n ".escapeshellarg((string)$copies)." ".implode(' ',$opts)." ".escapeshellarg($pdf)." 2>&1";
+
+    $cmd="lp -d ".escapeshellarg($printer)." -n ".escapeshellarg((string)$copies)." ".implode(' ',$opts)." ".escapeshellarg($path)." 2>&1";
     $out=shell_exec($cmd);
-    if($out===null){ $failed++; log_msg("lp failed null uid=$uid pdf=$pdf"); }
+    if($out===null){ $failed++; log_msg("lp failed null uid=$uid file=$fn"); }
     else {
       if(stripos($out,'error')!==false){ $failed++; log_msg("lp error uid=$uid: ".trim($out)); }
       else $printed++;
     }
   }
 
-  if($dry){
-    send_mail_msmtp($from,"Druckauftrag (Dry-Run): ".($subject?:'ohne Betreff'),
+  if ($dry) {
+    send_mail_msmtp($from, "Druckauftrag (Dry-Run): ".($subject?:'ohne Betreff'),
       "Dry-Run aktiv: NICHT gedruckt und NICHT verschoben.\nPDFs: $printed\nOptionen: ".implode(' ',$opts)."\nKopien: $copies");
     continue;
   }
 
-  if($failed>0){
+  if ($failed > 0) {
     log_msg("Worker: uid=$uid print failed=$failed keep in inbox");
-    send_mail_msmtp($from,"FEHLER beim Druck: ".($subject?:'ohne Betreff'),
+    send_mail_msmtp($from, "FEHLER beim Druck: ".($subject?:'ohne Betreff'),
       "Fehler beim Drucken.\nErfolgreich: $printed\nFehlgeschlagen: $failed\nMail bleibt im INBOX und wird erneut versucht.");
     continue;
   }
 
-  imap_move_seen($imap_host,$imap_port,$imap_tls,$imap_user,$imap_pass,$imap_inbox,$imap_done,$uid);
+  imap_setflag_full($mbox, (string)$msgno, "\\Seen");
+  imap_mail_move($mbox, (string)$msgno, $imap_done);
+  imap_expunge($mbox);
+
   log_msg("Worker: uid=$uid printed=$printed -> moved to done");
-  send_mail_msmtp($from,"Druckauftrag erfolgreich: ".($subject?:'ohne Betreff'),
+  send_mail_msmtp($from, "Druckauftrag erfolgreich: ".($subject?:'ohne Betreff'),
     "Erfolgreich gedruckt.\nPDFs: $printed\nMail wurde nach '$imap_done' verschoben.");
 }
 
-log_msg("Worker done");
+imap_close($mbox);

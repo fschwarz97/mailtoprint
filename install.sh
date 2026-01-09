@@ -54,6 +54,9 @@ chown root:root "${APP_DIR}" || true
 chgrp www-data "${APP_DIR}" || true
 chmod 750 "${APP_DIR}" || true
 
+# Allow RUN_USER to traverse APP_DIR (group www-data)
+usermod -aG www-data "${RUN_USER}" || true
+
 chmod 755 "${WWW_DIR}" "${BIN_DIR}" || true
 chmod 750 "${DATA_DIR}" "${LOG_DIR}" || true
 
@@ -101,12 +104,14 @@ Alias ${URL_PATH} ${WWW_DIR}
   Options -Indexes
   AllowOverride None
   Require all granted
+</Directory>
 
+<Location ${URL_PATH}>
   AuthType Basic
   AuthName "MailToPrint Admin"
   AuthUserFile ${AUTH_FILE}
   Require valid-user
-</Directory>
+</Location>
 EOF
 
 a2enconf mailtoprint >/dev/null 2>&1 || true
