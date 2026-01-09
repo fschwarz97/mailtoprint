@@ -89,8 +89,16 @@ function send_mail_msmtp(string $to, string $subj, string $body): void {
 
 function parse_subject_opts(string $subject): array {
   $s = strtolower($subject);
-  $color='sw'; $sides='1';
-  if (preg_match('/(sw|bunt)\s*-\s*(1|2)/',$s,$mm)){ $color=$mm[1]; $sides=$mm[2]; }
+  $color='sw'; $sides='1'; $paper='a4';
+
+  if (preg_match('/(sw|bunt)\s*-\s*(1|2)/',$s,$mm)){
+    $color=$mm[1]; $sides=$mm[2];
+  }
+
+  if (preg_match('/\b(a3|a4)\b/',$s,$mm)){
+    $paper = $mm[1];
+  }
+
   $copies=1;
   if (preg_match('/(^|[^a-z0-9])x([0-9]{1,3})([^0-9]|$)/',$s,$mm)) $copies=(int)$mm[2];
   if (preg_match('/(kopien|copies)\s*=\s*([0-9]{1,3})/',$s,$mm)) $copies=(int)$mm[2];
@@ -99,7 +107,10 @@ function parse_subject_opts(string $subject): array {
   $opts=[];
   $opts[] = ($color==='bunt') ? "-o ColorModel=RGB" : "-o ColorModel=Gray";
   $opts[] = ($sides==='2') ? "-o sides=two-sided-long-edge" : "-o sides=one-sided";
-  return [$opts, $copies, $color, $sides];
+  // Many CUPS drivers expose paper size as "PageSize" (see: lpoptions -l). Use PageSize to avoid silent A4 fallback.
+  $opts[] = ($paper==='a3') ? "-o PageSize=A3" : "-o PageSize=A4";
+
+  return [$opts, $copies, $color, $sides, $paper];
 }
 
 function imap_mailbox_string(string $host,string $port,string $tls,string $folder): string {
@@ -191,13 +202,13 @@ foreach($uids as $uid){
       log_msg("Worker: uid=$uid BLOCKED from=$from subj=".$subject." files=".(isset($printed_names)?implode(",",$printed_names):"-"));
       if ($dry) {
         send_mail_msmtp($from, "Druckauftrag abgelehnt (Dry-Run): ".($subject?:'ohne Betreff'),
-          "Ihr Druckauftrag wurde abgelehnt.");
+          "Ihr Druckauftrag wurde abgelehnt.);
       } else {
-        imap_setflag_full($mbox, (string)$msgno, "\\Seen");
+        imap_setflag_full($mbox, (string)$msgno, "\\Seen);
         imap_mail_move($mbox, (string)$msgno, $imap_blocked);
         imap_expunge($mbox);
         send_mail_msmtp($from, "Druckauftrag abgelehnt: ".($subject?:'ohne Betreff'),
-          "Ihr Druckauftrag wurde abgelehnt.");
+          "Ihr Druckauftrag wurde abgelehnt.);
       }
       continue;
     }
@@ -208,12 +219,12 @@ foreach($uids as $uid){
   if ($structure) collect_pdfs($mbox, $msgno, $structure, '', $pdfs);
 
   if (count($pdfs) === 0) {
-    log_msg("Worker: uid=$uid NO_PDF from=$from subj=".$subject." files=-");
-    if (!$dry) send_mail_msmtp($from, "FEHLER: Kein PDF-Anhang", "Kein PDF-Anhang gefunden. Bitte PDF anhängen und erneut senden.");
+    log_msg("Worker: uid=$uid NO_PDF from=$from subj=".$subject." files=-);
+    if (!$dry) send_mail_msmtp($from, "FEHLER: Kein PDF-Anhang", "Kein PDF-Anhang gefunden. Bitte PDF anhängen und erneut senden.);
     continue;
   }
 
-  [$opts, $copies] = parse_subject_opts($subject);
+  [$opts, $copies, $color, $sides, $paper] = parse_subject_opts($subject);
 
   $dir=$workbase."/uid-$uid-".time();
   @mkdir($dir,0770,true);
@@ -247,18 +258,18 @@ foreach($uids as $uid){
 
   if ($dry) {
     send_mail_msmtp($from, "Druckauftrag (Dry-Run): ".($subject?:'ohne Betreff'),
-      "Dry-Run aktiv: NICHT gedruckt und NICHT verschoben.\nPDFs: $printed\nOptionen: ".implode(' ',$opts)."\nKopien: $copies");
+      "Dry-Run aktiv: NICHT gedruckt und NICHT verschoben.\nPDFs: $printed\nOptionen: ".implode(' ',$opts)."\nKopien: $copies);
     continue;
   }
 
   if ($failed > 0) {
-    log_msg("Worker: uid=$uid print failed=$failed keep in inbox");
+    log_msg("Worker: uid=$uid print failed=$failed keep in inbox);
     send_mail_msmtp($from, "FEHLER beim Druck: ".($subject?:'ohne Betreff'),
-      "Fehler beim Drucken.\nErfolgreich: $printed\nFehlgeschlagen: $failed\nMail bleibt im INBOX und wird erneut versucht.");
+      "Fehler beim Drucken.\nErfolgreich: $printed\nFehlgeschlagen: $failed\nMail bleibt im INBOX und wird erneut versucht.);
     continue;
   }
 
-  imap_setflag_full($mbox, (string)$msgno, "\\Seen");
+  imap_setflag_full($mbox, (string)$msgno, "\\Seen);
   imap_mail_move($mbox, (string)$msgno, $imap_done);
   imap_expunge($mbox);
 

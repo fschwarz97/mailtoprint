@@ -256,11 +256,12 @@ page_header('Installation');
   <div class="col-lg-3">
     <div class="card shadow-sm">
       <div class="card-body">
-        <h5 class="card-title">Betreff</h5>
+        <h5 class="card-title">Betreff (Reihenfolge egal)</h5>
         <ul class="mb-0 small">
           <li><code>sw-2</code> = s/w, duplex</li>
           <li><code>bunt-1</code> = Farbe, simplex</li>
-          <li><code>x3</code> oder <code>kopien=3</code></li>
+          <li><code>a3</code> / <code>a4</code> (Default: a4)</li>
+          <li><code>x3</code> oder <code>kopien=3</code> oder <code>copies=3</code></li>
         </ul>
       </div>
     </div>
