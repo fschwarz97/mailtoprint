@@ -58,7 +58,14 @@ chmod 755 "${WWW_DIR}" "${BIN_DIR}" || true
 chmod 750 "${DATA_DIR}" "${LOG_DIR}" || true
 
 chown -R www-data:www-data "${WWW_DIR}" "${DATA_DIR}"
-chown -R "${RUN_USER}:${RUN_USER}" "${BIN_DIR}" "${LOG_DIR}"
+# Keep binaries owned by root to prevent tampering; executed via sudo -u RUN_USER
+chown -R root:root "${BIN_DIR}"
+
+# Logs must be writable by RUN_USER and readable by www-data (log viewer)
+touch "${LOG_DIR}/app.log"
+chown -R "${RUN_USER}:www-data" "${LOG_DIR}"
+chmod 2750 "${LOG_DIR}"
+chmod 0640 "${LOG_DIR}/app.log"
 chown -R "${RUN_USER}:www-data" "${DATA_DIR}/work"
 chmod 2770 "${DATA_DIR}/work"
 
@@ -67,7 +74,14 @@ rsync -a --delete "${SCRIPT_DIR}/www/" "${WWW_DIR}/"
 rsync -a --delete "${SCRIPT_DIR}/bin/" "${BIN_DIR}/"
 
 chown -R www-data:www-data "${WWW_DIR}" "${DATA_DIR}"
-chown -R "${RUN_USER}:${RUN_USER}" "${BIN_DIR}" "${LOG_DIR}"
+# Keep binaries owned by root to prevent tampering; executed via sudo -u RUN_USER
+chown -R root:root "${BIN_DIR}"
+
+# Logs must be writable by RUN_USER and readable by www-data (log viewer)
+touch "${LOG_DIR}/app.log"
+chown -R "${RUN_USER}:www-data" "${LOG_DIR}"
+chmod 2750 "${LOG_DIR}"
+chmod 0640 "${LOG_DIR}/app.log"
 chmod 755 "${BIN_DIR}/worker.sh" "${BIN_DIR}/worker.php" || true
 
 say "Basic-Auth Admin anlegen (Pflicht)"
@@ -131,7 +145,7 @@ ${LOG_DIR}/app.log {
   missingok
   notifempty
   copytruncate
-  create 0640 ${RUN_USER} adm
+  create 0640 ${RUN_USER} www-data
 }
 EOF
 chmod 644 "${LOGROTATE_FILE}"
