@@ -36,6 +36,8 @@ LOG_DIR="${APP_DIR}/logs"
 mkdir -p "${WWW_DIR}" "${DATA_DIR}" "${BIN_DIR}" "${LOG_DIR}" "${DATA_DIR}/work"
 chmod 750 "${APP_DIR}" || true
 chmod 2770 "${DATA_DIR}/work"
+chgrp www-data "${APP_DIR}"
+chmod 750 "${APP_DIR}"
 chown -R www-data:www-data "${WWW_DIR}" "${DATA_DIR}"
 chown -R "${RUN_USER}:${RUN_USER}" "${BIN_DIR}" "${LOG_DIR}"
 chown -R "${RUN_USER}:www-data" "${DATA_DIR}/work"
