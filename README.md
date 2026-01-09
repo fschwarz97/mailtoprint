@@ -24,3 +24,5 @@ If enabled, non-allowed senders are moved to IMAP_BLOCKED (default INBOX.Blocked
 ## Notes
 - Cron runs every minute but the worker exits immediately unless:
   installed=1 AND automation_enabled=1 AND printer configured.
+
+  <img width="1218" height="881" alt="image" src="https://github.com/user-attachments/assets/a071277e-6fce-4d10-b26c-555931981e75" />
